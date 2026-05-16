@@ -26,6 +26,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	geminiAuth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/gemini"
+	grokAuth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/grok"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
@@ -45,6 +46,7 @@ const (
 	anthropicCallbackPort = 54545
 	geminiCallbackPort    = 8085
 	codexCallbackPort     = 1455
+	grokCallbackPort      = 14567
 	geminiCLIEndpoint     = "https://cloudcode-pa.googleapis.com"
 	geminiCLIVersion      = "v1internal"
 )
@@ -2204,6 +2206,135 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 		fmt.Println("You can now use Kimi services through this CLI")
 		CompleteOAuthSession(state)
 		CompleteOAuthSessionsByProvider("kimi")
+	}()
+
+	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
+}
+
+func (h *Handler) RequestGrokToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	fmt.Println("Initializing Grok Build authentication...")
+
+	pkceCodes, err := grokAuth.GeneratePKCECodes()
+	if err != nil {
+		log.Errorf("Failed to generate PKCE codes: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
+		return
+	}
+
+	state, err := misc.GenerateRandomState()
+	if err != nil {
+		log.Errorf("Failed to generate state parameter: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+		return
+	}
+
+	grokAuthSvc := grokAuth.NewGrokAuth(h.cfg)
+
+	authURL, err := grokAuthSvc.GenerateAuthURL(state, pkceCodes)
+	if err != nil {
+		log.Errorf("Failed to generate authorization URL: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+		return
+	}
+
+	RegisterOAuthSession(state, "grok")
+
+	isWebUI := isWebUIRequest(c)
+	var forwarder *callbackForwarder
+	if isWebUI {
+		targetURL, errTarget := h.managementCallbackURL("/grok/callback")
+		if errTarget != nil {
+			log.WithError(errTarget).Error("failed to compute grok callback target")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
+			return
+		}
+		var errStart error
+		if forwarder, errStart = startCallbackForwarder(grokCallbackPort, "grok", targetURL); errStart != nil {
+			log.WithError(errStart).Error("failed to start grok callback forwarder")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
+			return
+		}
+	}
+
+	go func() {
+		if isWebUI {
+			defer stopCallbackForwarderInstance(grokCallbackPort, forwarder)
+		}
+
+		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-grok-%s.oauth", state))
+		deadline := time.Now().Add(5 * time.Minute)
+		var code string
+		for {
+			if !IsOAuthSessionPending(state, "grok") {
+				return
+			}
+			if time.Now().After(deadline) {
+				log.Error("Timeout waiting for Grok OAuth callback")
+				SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
+				return
+			}
+			if data, errR := os.ReadFile(waitFile); errR == nil {
+				var m map[string]string
+				_ = json.Unmarshal(data, &m)
+				_ = os.Remove(waitFile)
+				if errStr := m["error"]; errStr != "" {
+					log.Errorf("Grok OAuth error: %s", errStr)
+					SetOAuthSessionError(state, "Bad Request")
+					return
+				}
+				if m["state"] != state {
+					log.Errorf("Grok OAuth state mismatch: expected %s, got %s", state, m["state"])
+					SetOAuthSessionError(state, "State code error")
+					return
+				}
+				code = m["code"]
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		log.Debug("Grok authorization code received, exchanging for tokens...")
+		bundle, errExchange := grokAuthSvc.ExchangeCodeForTokens(ctx, code, pkceCodes)
+		if errExchange != nil {
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Failed to exchange authorization code for tokens", errExchange))
+			log.Errorf("Failed to exchange Grok authorization code: %v", errExchange)
+			return
+		}
+
+		tokenStorage := grokAuthSvc.CreateTokenStorage(bundle)
+		metadata := map[string]any{
+			"type":          "grok",
+			"access_token":  bundle.TokenData.AccessToken,
+			"refresh_token": bundle.TokenData.RefreshToken,
+			"timestamp":     time.Now().UnixMilli(),
+		}
+		if bundle.TokenData.Expire != "" {
+			metadata["expired"] = bundle.TokenData.Expire
+		}
+
+		fileName := fmt.Sprintf("grok-%d.json", time.Now().UnixMilli())
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "grok",
+			FileName: fileName,
+			Label:    "Grok Build User",
+			Storage:  tokenStorage,
+			Metadata: metadata,
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.Errorf("Failed to save Grok authentication tokens: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			return
+		}
+
+		fmt.Printf("Grok Build authentication successful! Token saved to %s\n", savedPath)
+		fmt.Println("You can now use Grok Build services through this CLI")
+		CompleteOAuthSession(state)
+		CompleteOAuthSessionsByProvider("grok")
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
