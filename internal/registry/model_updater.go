@@ -124,6 +124,11 @@ func tryRefreshModels(ctx context.Context, label string) {
 	// Detect changes before updating store.
 	changed := detectChangedProviders(oldData, parsed)
 
+	// Preserve locally-defined sections that the remote catalog does not include.
+	if len(parsed.Grok) == 0 && oldData != nil && len(oldData.Grok) > 0 {
+		parsed.Grok = oldData.Grok
+	}
+
 	// Update store with new data regardless.
 	modelsCatalogStore.mu.Lock()
 	modelsCatalogStore.data = parsed
