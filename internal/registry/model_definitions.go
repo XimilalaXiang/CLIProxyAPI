@@ -21,6 +21,7 @@ type staticModelsJSON struct {
 	CodexPro    []*ModelInfo `json:"codex-pro"`
 	Kimi        []*ModelInfo `json:"kimi"`
 	Antigravity []*ModelInfo `json:"antigravity"`
+	Grok        []*ModelInfo `json:"grok"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -76,6 +77,11 @@ func GetKimiModels() []*ModelInfo {
 // GetAntigravityModels returns the standard Antigravity model definitions.
 func GetAntigravityModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Antigravity)
+}
+
+// GetGrokModels returns the standard Grok Build model definitions.
+func GetGrokModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Grok)
 }
 
 // WithCodexBuiltins injects hard-coded Codex-only model definitions that should
@@ -186,6 +192,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetKimiModels()
 	case "antigravity":
 		return GetAntigravityModels()
+	case "grok":
+		return GetGrokModels()
 	default:
 		return nil
 	}
@@ -208,6 +216,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.CodexPro,
 		data.Kimi,
 		data.Antigravity,
+		data.Grok,
 	}
 	for _, models := range allModels {
 		for _, m := range models {

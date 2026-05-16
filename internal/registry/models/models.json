@@ -2064,5 +2064,17 @@
         ]
       }
     }
+  ],
+  "grok": [
+    {
+      "id": "grok-build",
+      "object": "model",
+      "created": 1747267200,
+      "owned_by": "xai",
+      "type": "grok",
+      "display_name": "Grok Build",
+      "context_length": 131072,
+      "max_completion_tokens": 32768
+    }
   ]
 }
